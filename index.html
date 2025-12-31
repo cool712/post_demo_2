@@ -1,101 +1,63 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Video Record</title>
-  <style>
-    body {
-      margin: 0;
-      background: black;
-      overflow: hidden;
-    }
-    video {
-      width: 100vw;
-      height: 100vh;
-      object-fit: cover;
-    }
-    button {
-      position: fixed;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 12px 20px;
-      font-size: 16px;
-    }
-  </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Record</title>
 </head>
+<body style="margin:0;background:black">
 
-<body>
-  <video id="preview" autoplay playsinline muted></video>
+<video id="video" autoplay playsinline muted style="width:100vw;height:100vh;object-fit:cover"></video>
 
-  <button onclick="toggleRecord()">Start / Stop</button>
+<script>
+  const video = document.getElementById("video");
+  let stream, recorder, chunks = [];
 
-  <script>
-    const video = document.getElementById("preview");
-    let stream;
-    let mediaRecorder;
-    let chunks = [];
-    let recording = false;
+  async function initCamera() {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
+    video.srcObject = stream;
+  }
 
-    async function initCamera() {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
-      });
-      video.srcObject = stream;
-    }
+  async function startRecord() {
+    chunks = [];
+    recorder = new MediaRecorder(stream, {
+      mimeType: "video/webm;codecs=vp8,opus"
+    });
 
-    async function startRecord() {
-      chunks = [];
-      mediaRecorder = new MediaRecorder(stream, {
-        mimeType: "video/webm;codecs=vp8,opus"
-      });
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
 
-      mediaRecorder.ondataavailable = e => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
+    recorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: "video/webm" });
+      const base64 = await blobToBase64(blob);
 
-      mediaRecorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: "video/webm" });
-        const base64 = await blobToBase64(blob);
+      window.flutter_inappwebview?.callHandler(
+        "onVideoRecorded",
+        base64
+      );
+    };
 
-        if (window.flutter_inappwebview) {
-          window.flutter_inappwebview.callHandler(
-            "onVideoRecorded",
-            base64
-          );
-        }
-      };
+    recorder.start();
+    console.log("🎥 start");
+  }
 
-      mediaRecorder.start();
-      recording = true;
-      console.log("🎥 recording start");
-    }
+  function stopRecord() {
+    recorder?.stop();
+    console.log("⏹ stop");
+  }
 
-    function stopRecord() {
-      if (mediaRecorder && recording) {
-        mediaRecorder.stop();
-        recording = false;
-        console.log("⏹ recording stop");
-      }
-    }
+  function blobToBase64(blob) {
+    return new Promise(resolve => {
+      const r = new FileReader();
+      r.onloadend = () => resolve(r.result.split(",")[1]);
+      r.readAsDataURL(blob);
+    });
+  }
 
-    function toggleRecord() {
-      recording ? stopRecord() : startRecord();
-    }
+  initCamera();
+</script>
 
-    function blobToBase64(blob) {
-      return new Promise(resolve => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          resolve(reader.result.split(",")[1]);
-        };
-        reader.readAsDataURL(blob);
-      });
-    }
-
-    initCamera();
-  </script>
 </body>
 </html>
