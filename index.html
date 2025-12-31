@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Dynamic Pose Detection</title>
+  <title>Optimized Pose Detection</title>
 
   <style>
     html, body {
@@ -43,16 +43,15 @@
 </head>
 
 <body>
-  <div id="tip">Initializing…</div>
+  <div id="tip">Initializing Fast Mode…</div>
   <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 
   <script type="module">
-    /* ---------------- 录制逻辑（保持不变） ---------------- */
+    /* ---------------- 1. 录制与上传逻辑 (保持稳定) ---------------- */
     let mediaRecorder;
     let recordedChunks = [];
     let startTime;
-    let duration = 0;
 
     window.startRecord = async function () {
       if (!video.srcObject) return;
@@ -72,7 +71,7 @@
     window.stopAndUpload = async function (uploadUrl, token) {
       if (!mediaRecorder) return;
       mediaRecorder.onstop = async () => {
-        duration = (Date.now() - startTime) / 1000;
+        const duration = (Date.now() - startTime) / 1000;
         const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
         const formData = new FormData();
         const ext = mediaRecorder.mimeType.includes("mp4") ? "mp4" : "webm";
@@ -80,7 +79,11 @@
         formData.append("duration", duration);
         try {
           const response = await fetch(uploadUrl, { method: "POST", body: formData });
-          window.flutter_inappwebview.callHandler("onUploadComplete", { success: response.ok, status: response.status });
+          window.flutter_inappwebview.callHandler("onUploadComplete", { 
+            success: response.ok, 
+            status: response.status,
+            duration: duration
+          });
         } catch (err) {
           window.flutter_inappwebview.callHandler("onUploadComplete", { success: false, error: err.message });
         }
@@ -88,22 +91,24 @@
       mediaRecorder.stop();
     };
 
-    /* ---------------- AI 逻辑：增加动态清晰度调节 ---------------- */
-
+    /* ---------------- 2. 核心 AI 与速度优化逻辑 ---------------- */
     import { PoseLandmarker, FilesetResolver } from "/mediapipe/tasks-vision/vision_bundle.js";
 
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
+    // 优化：禁用 alpha 通道，开启低延迟模式
+    const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
     const tip = document.getElementById("tip");
+
+    // --- 速度优化专用：离屏降采样 Canvas ---
+    const offscreenCanvas = document.createElement("canvas");
+    const oCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
+    const PROCESS_WIDTH = 256; // AI 处理的图像宽度，越小越快（建议 160-320 之间）
 
     let poseLandmarker = null;
     let running = false;
-    
-    // 动态调整参数
-    let dynamicScale = 0.5; // 初始识别分辨率比例 (0.1 ~ 1.0)
-    let frameCount = 0;
     let lastFpsCheck = 0;
+    let frameCount = 0;
 
     function toCanvas(p) {
       return { x: p.x * canvas.width, y: p.y * canvas.height };
@@ -116,58 +121,73 @@
     }
 
     async function startCamera() {
-      // 默认尝试高规格，由 AI 循环进行软缩放调整
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-        focusMode: "continuous"
-      });
-      video.srcObject = stream;
-      await new Promise(r => video.onloadedmetadata = r);
-      await video.play();
-      
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      running = true;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            facingMode: "environment", 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 }
+          },
+          audio: false
+        });
+        video.srcObject = stream;
+        await new Promise(r => video.onloadedmetadata = r);
+        await video.play();
+        
+        // 设置主显示 Canvas 尺寸
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        // 设置离屏识别 Canvas 尺寸（保持长宽比）
+        const aspect = video.videoHeight / video.videoWidth;
+        offscreenCanvas.width = PROCESS_WIDTH;
+        offscreenCanvas.height = PROCESS_WIDTH * aspect;
+
+        running = true;
+      } catch (e) {
+        tip.textContent = "Camera Error: " + e.message;
+      }
     }
 
     async function initPose() {
       const vision = await FilesetResolver.forVisionTasks("/mediapipe/tasks-vision/wasm");
       poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task", delegate: "GPU" },
+        baseOptions: { 
+          modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task", 
+          delegate: "GPU" 
+        },
         runningMode: "VIDEO",
-        numPoses: 1
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5
       });
-      tip.textContent = "System Ready";
+      tip.textContent = "Speed Optimized Ready";
     }
-
-    /* ---------------- 核心：动态清晰度调节循环 ---------------- */
 
     function loop(ts) {
       requestAnimationFrame(loop);
       if (!running || !poseLandmarker) return;
 
-      // 性能监控：每 30 帧检查一次处理速度
+      // FPS 监控
       frameCount++;
       if (ts - lastFpsCheck > 1000) {
-        const fps = frameCount;
-        // 如果 FPS 低于 12，降低内部识别分辨率（最小 0.3）
-        if (fps < 12 && dynamicScale > 0.3) dynamicScale -= 0.1;
-        // 如果 FPS 高于 14，且还有提升空间，增加分辨率（最大 1.0）
-        else if (fps > 14 && dynamicScale < 1.0) dynamicScale += 0.1;
-        
-        tip.textContent = `Quality: ${Math.round(dynamicScale * 100)}% | FPS: ${fps}`;
+        tip.textContent = `Performance: ${frameCount} FPS | Res: ${PROCESS_WIDTH}px`;
         frameCount = 0;
         lastFpsCheck = ts;
       }
 
+      // 1. 绘制离屏小图 (这是提速的关键)
+      oCtx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+
+      // 2. 清空主画布准备绘图
+      // 注意：视频是在底层通过 <video> 标签显示的，canvas 只需要画线
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 动态清晰度处理：
-      // 我们通过控制 detectForVideo 的输入源尺寸或频率来实现
-      // 这里采用 MediaPipe 内部的视频帧处理
-      const result = poseLandmarker.detectForVideo(video, ts);
+      // 3. AI 检测 (处理小图，速度极快)
+      const result = poseLandmarker.detectForVideo(offscreenCanvas, ts);
       
-      if (result.landmarks.length > 0) {
+      if (result.landmarks && result.landmarks.length > 0) {
         drawPose(result.landmarks[0]);
       }
     }
@@ -177,24 +197,42 @@
       ctx.strokeStyle = "#4ec9b0";
       ctx.fillStyle = "#ffffff";
       ctx.lineWidth = 3;
+
+      // 骨骼线定义
       const bones = [[11,13],[13,15],[12,14],[14,16],[23,25],[25,27],[24,26],[26,28],[11,12],[23,24],[11,23],[12,24]];
+      
+      // 绘制线条
       bones.forEach(([a,b]) => {
         const p1 = toCanvas(lm[a]), p2 = toCanvas(lm[b]);
-        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
       });
-      lm.forEach(p => {
+
+      // 绘制关键点（跳过面部 0-10 号点，节省性能）
+      lm.forEach((p, i) => {
+        if (i < 11) return; 
         const cp = toCanvas(p);
-        ctx.beginPath(); ctx.arc(cp.x, cp.y, 2, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath();
+        ctx.arc(cp.x, cp.y, 2, 0, Math.PI * 2);
+        ctx.fill();
       });
-      [ [11,13,15],[12,14,16],[23,25,27],[24,26,28] ].forEach(([a,b,c]) => {
+
+      // 计算并绘制四个核心关节角度
+      const joints = [ [11,13,15], [12,14,16], [23,25,27], [24,26,28] ];
+      joints.forEach(([a,b,c]) => {
         const angle = Math.round(calcAngle(lm[a], lm[b], lm[c]));
         const p = toCanvas(lm[b]);
-        ctx.font = "12px monospace";
-        ctx.fillText(`${angle}°`, p.x + 6, p.y - 6);
+        ctx.font = "bold 14px monospace";
+        ctx.fillStyle = "#4ec9b0";
+        ctx.fillText(`${angle}°`, p.x + 8, p.y - 8);
       });
+
       ctx.restore();
     }
 
+    /* ---------------- 启动执行 ---------------- */
     startCamera();
     initPose();
     requestAnimationFrame(loop);
