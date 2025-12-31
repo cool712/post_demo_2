@@ -1,116 +1,51 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Pose Detection + Record</title>
-<style>
-  html, body { margin:0; padding:0; width:100%; height:100%; background:black; overflow:hidden; }
-  video, canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-  canvas { pointer-events:none; }
-  #tip { position:absolute; top:12px; left:12px; color:#4ec9b0; font-size:14px; font-family:monospace; z-index:10; }
-</style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pose Record</title>
 </head>
 <body>
-<div id="tip">Camera starting…</div>
-<video id="video" autoplay playsinline muted></video>
-<canvas id="canvas"></canvas>
+<video id="video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;"></video>
+<script>
+let mediaRecorder;
+let recordedChunks = [];
+let stream;
 
-<script type="module">
-import { PoseLandmarker, FilesetResolver } from "/mediapipe/tasks-vision/vision_bundle.js";
-
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const tip = document.getElementById("tip");
-
-let poseLandmarker = null;
-let running = false;
-
-// ----------------- 工具函数 -----------------
-function toCanvas(p){ return {x:p.x*canvas.width, y:p.y*canvas.height}; }
-function calcAngle(a,b,c){ const ab={x:a.x-b.x,y:a.y-b.y}; const cb={x:c.x-b.x,y:c.y-b.y}; const dot=ab.x*cb.x+ab.y*cb.y; return Math.acos(dot/(Math.hypot(ab.x,ab.y)*Math.hypot(cb.x,cb.y)))*180/Math.PI; }
-function drawPoint(p,r=2){ ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill(); }
-function drawLine(a,b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
-function drawAngle(a,b,c){ const angle=Math.round(calcAngle(a,b,c)); const p=toCanvas(b); ctx.font="12px monospace"; ctx.fillText(`${angle}°`,p.x+6,p.y-6); }
-
-// ----------------- 摄像头 -----------------
-let mediaStream = null;
-async function startCamera(){
-  mediaStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment", width:{ideal:1280}, height:{ideal:720}}, audio:true});
-  video.srcObject = mediaStream;
-  await video.play();
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  running = true;
-  tip.textContent = "Camera ready";
-}
-
-// ----------------- Pose -----------------
-async function initPose(){
-  const vision = await FilesetResolver.forVisionTasks("/mediapipe/tasks-vision/wasm");
-  poseLandmarker = await PoseLandmarker.createFromOptions(vision,{
-    baseOptions:{modelAssetPath:"/mediapipe/model/pose_landmarker_lite.task", delegate:"GPU"},
-    runningMode:"VIDEO", numPoses:1
+// 启动摄像头
+async function startCamera() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 1280, height: 720 },
+    audio: true
   });
-  tip.textContent="Pose ready";
+  document.getElementById('video').srcObject = stream;
 }
+startCamera();
 
-// ----------------- 主循环 -----------------
-let lastAiTime = 0;
-const AI_INTERVAL = 1000/15;
-function loop(ts){
-  requestAnimationFrame(loop);
-  if(!running||!poseLandmarker) return;
-  if(ts-lastAiTime<AI_INTERVAL) return;
-  lastAiTime = ts;
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  const result = poseLandmarker.detectForVideo(video, ts);
-  if(!result.landmarks.length) return;
-  drawPose(result.landmarks[0]);
-}
-function drawPose(lm){
-  ctx.save();
-  ctx.strokeStyle="#00ff00";
-  ctx.fillStyle="#ffffff";
-  ctx.lineWidth=3;
-  const bones=[[11,13],[13,15],[12,14],[14,16],[23,25],[25,27],[24,26],[26,28],[11,12],[23,24],[11,23],[12,24]];
-  bones.forEach(([a,b])=>drawLine(toCanvas(lm[a]),toCanvas(lm[b])));
-  lm.forEach(p=>drawPoint(toCanvas(p)));
-  drawAngle(lm[11],lm[13],lm[15]);
-  drawAngle(lm[12],lm[14],lm[16]);
-  drawAngle(lm[23],lm[25],lm[27]);
-  drawAngle(lm[24],lm[26],lm[28]);
-  ctx.restore();
-}
-
-// ----------------- 录制 -----------------
-let mediaRecorder=null;
-let recordChunks=[];
-window.startRecord = function(){
-  if(mediaRecorder?.state==="recording") return;
-  if(!mediaStream){ console.error("MediaStream not ready"); return; }
-  mediaRecorder = new MediaRecorder(mediaStream, {mimeType:"video/webm;codecs=vp8"});
-  recordChunks=[];
-  mediaRecorder.ondataavailable = e=>{ if(e.data.size>0) recordChunks.push(e.data); };
-  mediaRecorder.onstart = ()=>{ console.log("🎥 Recording start"); };
-  mediaRecorder.onstop = ()=>{
-    const blob = new Blob(recordChunks,{type:"video/webm"});
+// 开始录制
+window.startRecord = () => {
+  if (!stream) return;
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+  mediaRecorder.ondataavailable = e => { if(e.data.size>0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
     const url = URL.createObjectURL(blob);
-    if(window.flutter_inappwebview) window.flutter_inappwebview.callHandler("onRecordFinish",url);
-    console.log("🛑 Recording stop",url);
+    if(window.flutter_inappwebview){
+      window.flutter_inappwebview.callHandler('onRecordFinish', url);
+    }
   };
   mediaRecorder.start();
-}
-window.stopRecord = function(){
-  if(mediaRecorder?.state==="recording") mediaRecorder.stop();
-}
+  console.log("Recording started");
+};
 
-// ----------------- 启动 -----------------
-startCamera();
-initPose();
-requestAnimationFrame(loop);
-
+// 停止录制
+window.stopRecord = () => {
+  if(mediaRecorder && mediaRecorder.state === "recording"){
+    mediaRecorder.stop();
+    console.log("Recording stopped");
+  }
+};
 </script>
 </body>
 </html>
