@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Optimized Pose Detection</title>
+  <title>Optimized Mirror Pose</title>
 
   <style>
     html, body {
@@ -15,16 +15,25 @@
       overflow: hidden;
     }
 
+    /* ⭐ 关键：同时对视频和画布进行水平镜像翻转 */
     video, canvas {
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
       object-fit: cover;
+      transform: scaleX(-1);
+      -webkit-transform: scaleX(-1);
     }
 
+    /* 确保画布在视频上方 */
     canvas {
+      z-index: 5;
       pointer-events: none;
+    }
+
+    video {
+      z-index: 1;
     }
 
     #tip {
@@ -43,12 +52,12 @@
 </head>
 
 <body>
-  <div id="tip">Initializing Fast Mode…</div>
+  <div id="tip">Initializing Mirror Mode…</div>
   <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 
   <script type="module">
-    /* ---------------- 1. 录制与上传逻辑 (保持稳定) ---------------- */
+    /* ---------------- 1. 录制与上传逻辑 ---------------- */
     let mediaRecorder;
     let recordedChunks = [];
     let startTime;
@@ -61,11 +70,6 @@
       mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
       startTime = Date.now();
       mediaRecorder.start();
-    };
-
-    window.pauseRecord = function () {
-      if (!mediaRecorder) return;
-      mediaRecorder.state === "recording" ? mediaRecorder.pause() : mediaRecorder.resume();
     };
 
     window.stopAndUpload = async function (uploadUrl, token) {
@@ -81,34 +85,32 @@
           const response = await fetch(uploadUrl, { method: "POST", body: formData });
           window.flutter_inappwebview.callHandler("onUploadComplete", { 
             success: response.ok, 
-            status: response.status,
-            duration: duration
+            status: response.status 
           });
         } catch (err) {
-          window.flutter_inappwebview.callHandler("onUploadComplete", { success: false, error: err.message });
+          window.flutter_inappwebview.callHandler("onUploadComplete", { success: false });
         }
       };
       mediaRecorder.stop();
     };
 
-    /* ---------------- 2. 核心 AI 与速度优化逻辑 ---------------- */
+    /* ---------------- 2. AI 逻辑与优化 ---------------- */
     import { PoseLandmarker, FilesetResolver } from "/mediapipe/tasks-vision/vision_bundle.js";
 
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
-    // 优化：禁用 alpha 通道，开启低延迟模式
-    const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
+    
+    // ⭐ 修复：alpha 必须为 true 才能看到背后的视频
+    const ctx = canvas.getContext("2d", { alpha: true }); 
     const tip = document.getElementById("tip");
 
-    // --- 速度优化专用：离屏降采样 Canvas ---
+    // 离屏优化
     const offscreenCanvas = document.createElement("canvas");
     const oCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
-    const PROCESS_WIDTH = 256; // AI 处理的图像宽度，越小越快（建议 160-320 之间）
+    const PROCESS_WIDTH = 256; 
 
     let poseLandmarker = null;
     let running = false;
-    let lastFpsCheck = 0;
-    let frameCount = 0;
 
     function toCanvas(p) {
       return { x: p.x * canvas.width, y: p.y * canvas.height };
@@ -121,72 +123,42 @@
     }
 
     async function startCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            facingMode: "environment", 
-            width: { ideal: 1280 }, 
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 }
-          },
-          audio: false
-        });
-        video.srcObject = stream;
-        await new Promise(r => video.onloadedmetadata = r);
-        await video.play();
-        
-        // 设置主显示 Canvas 尺寸
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-
-        // 设置离屏识别 Canvas 尺寸（保持长宽比）
-        const aspect = video.videoHeight / video.videoWidth;
-        offscreenCanvas.width = PROCESS_WIDTH;
-        offscreenCanvas.height = PROCESS_WIDTH * aspect;
-
-        running = true;
-      } catch (e) {
-        tip.textContent = "Camera Error: " + e.message;
-      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await new Promise(r => video.onloadedmetadata = r);
+      await video.play();
+      
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      offscreenCanvas.width = PROCESS_WIDTH;
+      offscreenCanvas.height = PROCESS_WIDTH * (video.videoHeight / video.videoWidth);
+      running = true;
     }
 
     async function initPose() {
       const vision = await FilesetResolver.forVisionTasks("/mediapipe/tasks-vision/wasm");
       poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-        baseOptions: { 
-          modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task", 
-          delegate: "GPU" 
-        },
+        baseOptions: { modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task", delegate: "GPU" },
         runningMode: "VIDEO",
-        numPoses: 1,
-        minPoseDetectionConfidence: 0.5,
-        minPosePresenceConfidence: 0.5
+        numPoses: 1
       });
-      tip.textContent = "Speed Optimized Ready";
+      tip.textContent = "Mirror Mode Ready";
     }
 
     function loop(ts) {
       requestAnimationFrame(loop);
       if (!running || !poseLandmarker) return;
 
-      // FPS 监控
-      frameCount++;
-      if (ts - lastFpsCheck > 1000) {
-        tip.textContent = `Performance: ${frameCount} FPS | Res: ${PROCESS_WIDTH}px`;
-        frameCount = 0;
-        lastFpsCheck = ts;
-      }
-
-      // 1. 绘制离屏小图 (这是提速的关键)
+      // 1. 将视频帧画到离屏小画布进行 AI 检测
       oCtx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
 
-      // 2. 清空主画布准备绘图
-      // 注意：视频是在底层通过 <video> 标签显示的，canvas 只需要画线
+      // 2. 清空主画布（现在的 alpha: true 允许看到底层视频）
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 3. AI 检测 (处理小图，速度极快)
       const result = poseLandmarker.detectForVideo(offscreenCanvas, ts);
-      
       if (result.landmarks && result.landmarks.length > 0) {
         drawPose(result.landmarks[0]);
       }
@@ -198,41 +170,28 @@
       ctx.fillStyle = "#ffffff";
       ctx.lineWidth = 3;
 
-      // 骨骼线定义
       const bones = [[11,13],[13,15],[12,14],[14,16],[23,25],[25,27],[24,26],[26,28],[11,12],[23,24],[11,23],[12,24]];
-      
-      // 绘制线条
       bones.forEach(([a,b]) => {
         const p1 = toCanvas(lm[a]), p2 = toCanvas(lm[b]);
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
       });
 
-      // 绘制关键点（跳过面部 0-10 号点，节省性能）
       lm.forEach((p, i) => {
         if (i < 11) return; 
         const cp = toCanvas(p);
-        ctx.beginPath();
-        ctx.arc(cp.x, cp.y, 2, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(cp.x, cp.y, 2, 0, Math.PI * 2); ctx.fill();
       });
 
-      // 计算并绘制四个核心关节角度
-      const joints = [ [11,13,15], [12,14,16], [23,25,27], [24,26,28] ];
-      joints.forEach(([a,b,c]) => {
+      [ [11,13,15], [12,14,16], [23,25,27], [24,26,28] ].forEach(([a,b,c]) => {
         const angle = Math.round(calcAngle(lm[a], lm[b], lm[c]));
         const p = toCanvas(lm[b]);
         ctx.font = "bold 14px monospace";
         ctx.fillStyle = "#4ec9b0";
         ctx.fillText(`${angle}°`, p.x + 8, p.y - 8);
       });
-
       ctx.restore();
     }
 
-    /* ---------------- 启动执行 ---------------- */
     startCamera();
     initPose();
     requestAnimationFrame(loop);
