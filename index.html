@@ -3,19 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Pose Detection - Pro Switch</title>
+  <title>Pose Detection - Remote Control</title>
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: black; overflow: hidden; }
     video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    /* 镜像样式由 JS 动态控制 */
     .mirror { transform: scaleX(-1); -webkit-transform: scaleX(-1); }
     canvas { pointer-events: none; z-index: 5; }
-    #tip { position: absolute; top: 12px; left: 12px; color: #4ec9b0; font-size: 14px; font-family: monospace; z-index: 10; background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 4px; }
-    #switchBtn { position: absolute; bottom: 40px; right: 30px; width: 60px; height: 60px; background: rgba(255,255,255,0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 20; border: 2px solid #fff; color: white; font-size: 30px; cursor: pointer; backdrop-filter: blur(4px); -webkit-tap-highlight-color: transparent; }
+    #tip { position: absolute; top: 12px; left: 12px; color: #4ec9b0; font-size: 12px; font-family: monospace; z-index: 10; background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 4px; }
   </style>
 </head>
 <body>
-  <div id="tip">System Initializing...</div>
-  <div id="switchBtn">🔄</div>
+  <div id="tip">AI System Initializing...</div>
   <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 
@@ -26,43 +25,58 @@
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
     const tip = document.getElementById("tip");
-    const switchBtn = document.getElementById("switchBtn");
 
     let poseLandmarker = null;
     let running = false;
     let currentFacingMode = "user"; 
 
-    // --- 核心修复：更健壮的摄像头启动逻辑 ---
+    /* ---------------- 原生端调用的接口 ---------------- */
+
+    /**
+     * 1. 自动切换摄像头 (前置 <-> 后置)
+     */
+    window.toggleCamera = function() {
+      currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
+      startCamera();
+    };
+
+    /**
+     * 2. 指定切换摄像头
+     * @param {string} mode - "user" 或 "environment"
+     */
+    window.switchCameraTo = function(mode) {
+      if (mode === "user" || mode === "environment") {
+        currentFacingMode = mode;
+        startCamera();
+      }
+    };
+
+    /* ---------------- 核心：启动/切换摄像头 ---------------- */
     async function startCamera() {
       running = false; 
-      tip.textContent = "Switching Camera...";
+      tip.textContent = "Hardware Switching...";
 
-      // 1. 彻底停止并移除所有轨道
+      // 彻底清理旧流
       if (video.srcObject) {
-        const tracks = video.srcObject.getTracks();
-        tracks.forEach(track => {
-          track.stop();
-          console.log("Stopped track:", track.label);
-        });
+        video.srcObject.getTracks().forEach(track => track.stop());
         video.srcObject = null;
       }
 
-      // 2. 延迟一小会儿，给系统释放硬件的时间（某些安卓 Webview 必须这样做）
-      await new Promise(resolve => setTimeout(resolve, 300));
+      // 给硬件 300ms 缓冲时间
+      await new Promise(r => setTimeout(r, 300));
 
       const constraints = [
         { video: { facingMode: { exact: currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } } },
         { video: { facingMode: currentFacingMode, width: { ideal: 640 }, height: { ideal: 480 } } },
-        { video: true } // 最终保底
+        { video: true }
       ];
 
-      let lastError;
       for (const constraint of constraints) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia(constraint);
           video.srcObject = stream;
           
-          // 3. 处理镜像显示
+          // 处理镜像
           if (currentFacingMode === "user") {
             video.classList.add("mirror");
             canvas.classList.add("mirror");
@@ -74,22 +88,21 @@
           await new Promise(r => video.onloadedmetadata = r);
           await video.play();
 
-          // 4. 同步 Canvas 与视频物理分辨率
+          // 同步画布
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
           
           running = true;
-          tip.textContent = `Active: ${currentFacingMode}`;
-          return; // 成功后退出循环
+          tip.textContent = `Camera: ${currentFacingMode}`;
+          return;
         } catch (e) {
-          lastError = e;
-          console.warn("Constraint failed, trying next...", e);
+          console.warn("Retrying constraints...", e);
         }
       }
-      
-      tip.textContent = "Error: " + lastError.message;
+      tip.textContent = "Camera switch failed";
     }
 
+    /* ---------------- AI 逻辑 ---------------- */
     async function initPose() {
       const vision = await FilesetResolver.forVisionTasks("/mediapipe/tasks-vision/wasm");
       poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
@@ -97,7 +110,7 @@
         runningMode: "VIDEO",
         numPoses: 1
       });
-      tip.textContent = "AI Ready";
+      tip.textContent = "AI Active";
       requestAnimationFrame(loop);
     }
 
@@ -112,7 +125,6 @@
       requestAnimationFrame(loop);
     }
 
-    /* ---------------- 绘图逻辑 (同前) ---------------- */
     function toCanvas(p) { return { x: p.x * canvas.width, y: p.y * canvas.height }; }
     function calcAngle(a, b, c) {
       const ab = { x: a.x - b.x, y: a.y - b.y }, cb = { x: c.x - b.x, y: c.y - b.y };
@@ -144,18 +156,33 @@
       ctx.restore();
     }
 
-    // 切换按钮监听
-    switchBtn.addEventListener('click', () => {
-      currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
-      startCamera();
-    });
-
     startCamera();
     initPose();
 
-    /* --- 原有录制接口保持不变 --- */
-    window.startRecord = async function(){ /* ...同前... */ };
-    window.stopAndUpload = async function(url, token){ /* ...同前... */ };
+    /* --- 录制接口保持供 Flutter 调用 --- */
+    let mediaRecorder;
+    let recordedChunks = [];
+    let recordStartTime;
+    window.startRecord = async function() {
+      recordedChunks = [];
+      const mimeType = MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "video/webm;codecs=vp8";
+      mediaRecorder = new MediaRecorder(video.srcObject, { mimeType });
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+      recordStartTime = Date.now();
+      mediaRecorder.start();
+    };
+    window.stopAndUpload = async function(url) {
+      if (!mediaRecorder) return;
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+        const formData = new FormData();
+        formData.append("file", blob, `rec_${Date.now()}.mp4`);
+        formData.append("duration", (Date.now() - recordStartTime)/1000);
+        await fetch(url, { method: "POST", body: formData });
+        window.flutter_inappwebview.callHandler("onUploadComplete", { success: true });
+      };
+      mediaRecorder.stop();
+    };
   </script>
 </body>
 </html>
