@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Dynamic Pose Detection</title>
+  <title>Pose Detection - Switch Camera</title>
 
   <style>
     html, body {
@@ -23,8 +23,15 @@
       object-fit: cover;
     }
 
+    /* 默认前置镜像，后置逻辑在 JS 中动态控制 */
+    .mirror {
+      transform: scaleX(-1);
+      -webkit-transform: scaleX(-1);
+    }
+
     canvas {
       pointer-events: none;
+      z-index: 5;
     }
 
     #tip {
@@ -39,20 +46,40 @@
       padding: 4px 8px;
       border-radius: 4px;
     }
+
+    /* 切换摄像头按钮样式 */
+    #switchBtn {
+      position: absolute;
+      bottom: 30px;
+      right: 30px;
+      width: 50px;
+      height: 50px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+      border: 2px solid white;
+      color: white;
+      cursor: pointer;
+      font-size: 24px;
+      user-select: none;
+    }
   </style>
 </head>
 
 <body>
   <div id="tip">Initializing…</div>
+  <div id="switchBtn">🔄</div>
   <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 
   <script type="module">
-    /* ---------------- 录制逻辑（保持不变） ---------------- */
+    /* ---------------- 1. 录制逻辑 ---------------- */
     let mediaRecorder;
     let recordedChunks = [];
     let startTime;
-    let duration = 0;
 
     window.startRecord = async function () {
       if (!video.srcObject) return;
@@ -64,15 +91,10 @@
       mediaRecorder.start();
     };
 
-    window.pauseRecord = function () {
-      if (!mediaRecorder) return;
-      mediaRecorder.state === "recording" ? mediaRecorder.pause() : mediaRecorder.resume();
-    };
-
     window.stopAndUpload = async function (uploadUrl, token) {
       if (!mediaRecorder) return;
       mediaRecorder.onstop = async () => {
-        duration = (Date.now() - startTime) / 1000;
+        const duration = (Date.now() - startTime) / 1000;
         const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
         const formData = new FormData();
         const ext = mediaRecorder.mimeType.includes("mp4") ? "mp4" : "webm";
@@ -82,52 +104,70 @@
           const response = await fetch(uploadUrl, { method: "POST", body: formData });
           window.flutter_inappwebview.callHandler("onUploadComplete", { success: response.ok, status: response.status });
         } catch (err) {
-          window.flutter_inappwebview.callHandler("onUploadComplete", { success: false, error: err.message });
+          window.flutter_inappwebview.callHandler("onUploadComplete", { success: false });
         }
       };
       mediaRecorder.stop();
     };
 
-    /* ---------------- AI 逻辑：增加动态清晰度调节 ---------------- */
-
+    /* ---------------- 2. 摄像头与 AI 逻辑 ---------------- */
     import { PoseLandmarker, FilesetResolver } from "/mediapipe/tasks-vision/vision_bundle.js";
 
     const video = document.getElementById("video");
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
     const tip = document.getElementById("tip");
+    const switchBtn = document.getElementById("switchBtn");
 
     let poseLandmarker = null;
     let running = false;
-    
-    // 动态调整参数
-    let dynamicScale = 0.5; // 初始识别分辨率比例 (0.1 ~ 1.0)
-    let frameCount = 0;
-    let lastFpsCheck = 0;
+    let currentFacingMode = "user"; // 初始使用前置
 
-    function toCanvas(p) {
-      return { x: p.x * canvas.width, y: p.y * canvas.height };
-    }
-
-    function calcAngle(a, b, c) {
-      const ab = { x: a.x - b.x, y: a.y - b.y }, cb = { x: c.x - b.x, y: c.y - b.y };
-      const dot = ab.x * cb.x + ab.y * cb.y;
-      return Math.acos(dot / (Math.hypot(ab.x, ab.y) * Math.hypot(cb.x, cb.y))) * 180 / Math.PI;
-    }
+    // 切换按钮事件
+    switchBtn.onclick = () => {
+      currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+      startCamera();
+    };
 
     async function startCamera() {
-      // 默认尝试高规格，由 AI 循环进行软缩放调整
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-        focusMode: "continuous"
-      });
-      video.srcObject = stream;
-      await new Promise(r => video.onloadedmetadata = r);
-      await video.play();
+      tip.textContent = "Switching camera...";
       
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      running = true;
+      // 停止旧轨道，防止摄像头占用错误
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(track => track.stop());
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            facingMode: currentFacingMode, 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 } 
+          },
+          audio: false
+        });
+
+        video.srcObject = stream;
+
+        // 根据摄像头模式决定是否镜像
+        if (currentFacingMode === "user") {
+          video.classList.add("mirror");
+          canvas.classList.add("mirror");
+        } else {
+          video.classList.remove("mirror");
+          canvas.classList.remove("mirror");
+        }
+
+        await new Promise(r => video.onloadedmetadata = r);
+        await video.play();
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        running = true;
+        tip.textContent = `Camera: ${currentFacingMode}`;
+      } catch (err) {
+        tip.textContent = "Camera error: " + err.message;
+      }
     }
 
     async function initPose() {
@@ -137,39 +177,30 @@
         runningMode: "VIDEO",
         numPoses: 1
       });
-      tip.textContent = "System Ready";
+      tip.textContent = "Ready";
     }
 
-    /* ---------------- 核心：动态清晰度调节循环 ---------------- */
-
+    /* ---------------- 3. AI 循环 ---------------- */
     function loop(ts) {
       requestAnimationFrame(loop);
       if (!running || !poseLandmarker) return;
 
-      // 性能监控：每 30 帧检查一次处理速度
-      frameCount++;
-      if (ts - lastFpsCheck > 1000) {
-        const fps = frameCount;
-        // 如果 FPS 低于 12，降低内部识别分辨率（最小 0.3）
-        if (fps < 12 && dynamicScale > 0.3) dynamicScale -= 0.1;
-        // 如果 FPS 高于 14，且还有提升空间，增加分辨率（最大 1.0）
-        else if (fps > 14 && dynamicScale < 1.0) dynamicScale += 0.1;
-        
-        tip.textContent = `Quality: ${Math.round(dynamicScale * 100)}% | FPS: ${fps}`;
-        frameCount = 0;
-        lastFpsCheck = ts;
-      }
-
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // 动态清晰度处理：
-      // 我们通过控制 detectForVideo 的输入源尺寸或频率来实现
-      // 这里采用 MediaPipe 内部的视频帧处理
       const result = poseLandmarker.detectForVideo(video, ts);
       
-      if (result.landmarks.length > 0) {
+      if (result.landmarks && result.landmarks.length > 0) {
         drawPose(result.landmarks[0]);
       }
+    }
+
+    function toCanvas(p) {
+      return { x: p.x * canvas.width, y: p.y * canvas.height };
+    }
+
+    function calcAngle(a, b, c) {
+      const ab = { x: a.x - b.x, y: a.y - b.y }, cb = { x: c.x - b.x, y: c.y - b.y };
+      const dot = ab.x * cb.x + ab.y * cb.y;
+      return Math.acos(dot / (Math.hypot(ab.x, ab.y) * Math.hypot(cb.x, cb.y))) * 180 / Math.PI;
     }
 
     function drawPose(lm) {
@@ -182,15 +213,16 @@
         const p1 = toCanvas(lm[a]), p2 = toCanvas(lm[b]);
         ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
       });
-      lm.forEach(p => {
+      lm.forEach((p, i) => {
+        if (i < 11) return; 
         const cp = toCanvas(p);
         ctx.beginPath(); ctx.arc(cp.x, cp.y, 2, 0, Math.PI * 2); ctx.fill();
       });
-      [ [11,13,15],[12,14,16],[23,25,27],[24,26,28] ].forEach(([a,b,c]) => {
+      [ [11,13,15], [12,14,16], [23,25,27], [24,26,28] ].forEach(([a,b,c]) => {
         const angle = Math.round(calcAngle(lm[a], lm[b], lm[c]));
         const p = toCanvas(lm[b]);
-        ctx.font = "12px monospace";
-        ctx.fillText(`${angle}°`, p.x + 6, p.y - 6);
+        ctx.font = "bold 14px monospace";
+        ctx.fillText(`${angle}°`, p.x + 8, p.y - 8);
       });
       ctx.restore();
     }
