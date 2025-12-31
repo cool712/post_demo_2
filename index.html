@@ -119,7 +119,7 @@
       // 默认尝试高规格，由 AI 循环进行软缩放调整
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
+        focusMode: "continuous"
       });
       video.srcObject = stream;
       await new Promise(r => video.onloadedmetadata = r);
