@@ -127,6 +127,7 @@
 			/* ================= 2. AI 初始化 (异步) ================= */
 			async function initAI() {
 				try {
+				tip.textContent = "AI loading...";
 					const vision = await FilesetResolver.forVisionTasks(
 						"/mediapipe/tasks-vision/wasm"
 					);
@@ -150,13 +151,7 @@
 			/* ================= 3. 主循环 (解耦检测与渲染) ================= */
 			function loop(ts) {
 				requestAnimationFrame(loop);
-				if (!running) return;
-
-				// 清除画布（注意：video 会在底层自动渲染，canvas 只负责画线）
-				ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-				// 如果 AI 还没好，直接跳过 AI 计算，保持视频播放
-				if (!poseLandmarker) return;
+			   if (!running || !poseLandmarker) return;
 
 				// 性能监控
 				frameCount++;
