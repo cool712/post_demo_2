@@ -107,7 +107,7 @@
 				canvas.classList.toggle("mirror", mirror);
 
 				running = true;
-				requestAnimationFrame(loop);
+
 				tip.textContent = `Camera OK (${facingMode})`;
 			}
 
@@ -339,6 +339,7 @@
 			//L
 			/* ================= 启动 ================= */
 			startCamera();
+					requestAnimationFrame(loop);
 			initAI();
 			
 		</script>
