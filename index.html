@@ -164,7 +164,7 @@
 					frameCount = 0;
 					lastFpsCheck = ts;
 				}
-
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 				// AI 姿态识别
 				const result = poseLandmarker.detectForVideo(video, ts);
 				if (result.landmarks && result.landmarks.length > 0) {
