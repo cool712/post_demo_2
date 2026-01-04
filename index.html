@@ -111,25 +111,7 @@
 			}
 
 			/* ================= AI 初始化 ================= */
-			async function initAI() {
-				tip.textContent = "AI loading...";
 
-				const vision = await FilesetResolver.forVisionTasks(
-					"/mediapipe/tasks-vision/wasm"
-				);
-
-				poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-					baseOptions: {
-						modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task",
-						delegate: "GPU"
-					},
-					runningMode: "VIDEO",
-					numPoses: 1
-				});
-
-				tip.textContent = "AI Ready";
-				requestAnimationFrame(loop);
-			}
 
 			/* ================= 主循环 ================= */
 			function loop(ts) {
@@ -338,7 +320,7 @@
 			//L
 			/* ================= 启动 ================= */
 			startCamera();
-			initAI();
+	
 			
 		</script>
 	</body>
