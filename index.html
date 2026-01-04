@@ -137,25 +137,22 @@
 			}
 
 			/* ================= 5. 并行启动逻辑 ================= */
-			async function main() {
-				tip.textContent = "Loading...";
+	/* ================= 优化后的启动逻辑 ================= */
+async function main() {
+    tip.textContent = "Loading Camera...";
 
-				// 同时启动两个异步任务，不使用 await 互相阻塞
-				const cameraTask = startCamera();
-				const aiTask = initAI();
+    // 1. 第一优先级：先启动摄像头，让用户看到画面，心情不焦虑
+    await startCamera(); 
+    requestAnimationFrame(loop); 
+    
+    // 2. 关键优化：给浏览器 300ms 的“喘息时间”
+    // 让摄像头渲染稳定下来，避开硬件调用的瞬时 CPU 峰值
+    await new Promise(resolve => setTimeout(resolve, 300));
 
-				// 只要摄像头任务先完成，立即启动 loop 展现画面
-				cameraTask.then(() => {
-					requestAnimationFrame(loop);
-					if (!poseLandmarker) {
-						tip.textContent = "AI Loading in background...";
-					}
-				});
-
-				// 等待所有任务完成（如果需要做整体 Ready 状态处理）
-				await Promise.all([cameraTask, aiTask]);
-				tip.textContent = "System Fully Ready";
-			}
+    // 3. 第二优先级：后台静默加载 AI
+    tip.textContent = "Initializing AI Engine...";
+    await initAI();
+}
 
 			main();
 
