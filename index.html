@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 	<head>
@@ -16,24 +17,13 @@
 				overflow: hidden;
 			}
 
-			video {
-				position: absolute;
-				inset: 0;
-				width: 100%;
-				height: 100%;
-				object-fit: cover;
-				z-index: 1; /* 确保视频在底层 */
-				background: #000;
-			}
-
+			video,
 			canvas {
 				position: absolute;
 				inset: 0;
 				width: 100%;
 				height: 100%;
 				object-fit: cover;
-				z-index: 2; /* 画布在视频上方 */
-				pointer-events: none; /* 防止画布阻挡点击 */
 			}
 
 			.mirror {
@@ -57,7 +47,7 @@
 	</head>
 
 	<body>
-		<div id="tip">Initializing Camera...</div>
+		<div id="tip">Initializing...</div>
 		<video id="video" autoplay playsinline muted></video>
 		<canvas id="canvas"></canvas>
 
@@ -79,105 +69,98 @@
 			let running = false;
 			let facingMode = "user";
 
-			/* ---------- FPS & Performance ---------- */
-			let dynamicScale = 0.5; 
+			/* ---------- FPS ---------- */
+
+			// 动态调整参数
+			let dynamicScale = 0.5; // 初始识别分辨率比例 (0.1 ~ 1.0)
 			let frameCount = 0;
 			let lastFpsCheck = 0;
-
-			/* ================= 1. 摄像头启动 (优先) ================= */
+			/* ================= 摄像头 ================= */
 			async function startCamera() {
+				running = false;
 				tip.textContent = "Camera loading...";
 
 				if (video.srcObject) {
 					video.srcObject.getTracks().forEach(t => t.stop());
 				}
 
-				try {
-					const stream = await navigator.mediaDevices.getUserMedia({
-						video: {
-							facingMode,
-							width: { ideal: 1280 },
-							height: { ideal: 720 }
-						}
-					});
-
-					video.srcObject = stream;
-
-					// 核心修改：等待元数据加载，立即显示画面
-					return new Promise((resolve) => {
-						video.onloadedmetadata = () => {
-							video.play();
-							canvas.width = video.videoWidth;
-							canvas.height = video.videoHeight;
-
-							const mirror = facingMode === "user";
-							video.classList.toggle("mirror", mirror);
-							canvas.classList.toggle("mirror", mirror);
-
-							running = true; 
-							tip.textContent = "Camera OK, loading AI...";
-							resolve();
-						};
-					});
-				} catch (err) {
-					tip.textContent = "Camera Error: " + err.message;
-				}
-			}
-
-			/* ================= 2. AI 初始化 (异步) ================= */
-			async function initAI() {
-				try {
-					const vision = await FilesetResolver.forVisionTasks(
-						"/mediapipe/tasks-vision/wasm"
-					);
-
-					poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-						baseOptions: {
-							modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task",
-							delegate: "GPU"
+				const stream = await navigator.mediaDevices.getUserMedia({
+					video: {
+						facingMode,
+						width: {
+							ideal: 1280
 						},
-						runningMode: "VIDEO",
-						numPoses: 1
-					});
+						height: {
+							ideal: 720
+						}
+					}
+				});
 
-					tip.textContent = "AI Ready";
-				} catch (err) {
-					tip.textContent = "AI Load Failed";
-					console.error(err);
-				}
+				video.srcObject = stream;
+				await video.play();
+
+				canvas.width = video.videoWidth;
+				canvas.height = video.videoHeight;
+
+				const mirror = facingMode === "user";
+				video.classList.toggle("mirror", mirror);
+				canvas.classList.toggle("mirror", mirror);
+
+				running = true;
+				tip.textContent = `Camera OK (${facingMode})`;
 			}
 
-			/* ================= 3. 主循环 (解耦检测与渲染) ================= */
+			/* ================= AI 初始化 ================= */
+			async function initAI() {
+				tip.textContent = "AI loading...";
+
+				const vision = await FilesetResolver.forVisionTasks(
+					"/mediapipe/tasks-vision/wasm"
+				);
+
+				poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+					baseOptions: {
+						modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task",
+						delegate: "GPU"
+					},
+					runningMode: "VIDEO",
+					numPoses: 1
+				});
+
+				tip.textContent = "AI Ready";
+				requestAnimationFrame(loop);
+			}
+
+			/* ================= 主循环 ================= */
 			function loop(ts) {
 				requestAnimationFrame(loop);
-				if (!running) return;
-
-				// 清除画布（注意：video 会在底层自动渲染，canvas 只负责画线）
-				ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-				// 如果 AI 还没好，直接跳过 AI 计算，保持视频播放
-				if (!poseLandmarker) return;
-
-				// 性能监控
-				frameCount++;
-				if (ts - lastFpsCheck > 1000) {
-					const fps = frameCount;
-					if (fps < 12 && dynamicScale > 0.3) dynamicScale -= 0.1;
-					else if (fps > 14 && dynamicScale < 1.0) dynamicScale += 0.1;
-					
-					tip.textContent = `Quality: ${Math.round(dynamicScale * 100)}% | FPS: ${fps}`;
-					frameCount = 0;
-					lastFpsCheck = ts;
-				}
-
-				// AI 姿态识别
-				const result = poseLandmarker.detectForVideo(video, ts);
-				if (result.landmarks && result.landmarks.length > 0) {
-					drawPose(result.landmarks[0]);
-				}
+				  if (!running || !poseLandmarker) return;
+				  // 性能监控：每 30 帧检查一次处理速度
+				  frameCount++;
+				  if (ts - lastFpsCheck > 1000) {
+				    const fps = frameCount;
+				    // 如果 FPS 低于 12，降低内部识别分辨率（最小 0.3）
+				    if (fps < 12 && dynamicScale > 0.3) dynamicScale -= 0.1;
+				    // 如果 FPS 高于 14，且还有提升空间，增加分辨率（最大 1.0）
+				    else if (fps > 14 && dynamicScale < 1.0) dynamicScale += 0.1;
+				    
+				    tip.textContent = `Quality: ${Math.round(dynamicScale * 100)}% | FPS: ${fps}`;
+				    frameCount = 0;
+				    lastFpsCheck = ts;
+				  }
+				  ctx.clearRect(0, 0, canvas.width, canvas.height);
+				  
+				  // 动态清晰度处理：
+				  // 我们通过控制 detectForVideo 的输入源尺寸或频率来实现
+				  // 这里采用 MediaPipe 内部的视频帧处理
+				  const result = poseLandmarker.detectForVideo(video, ts);
+				  
+				  if (result.landmarks.length > 0) {
+				    drawPose(result.landmarks[0]);
+				  }
 			}
 
-			/* ================= 绘制函数 ================= */
+			/* ================= 绘制 ================= */
 			function drawPose(lm) {
 				ctx.save();
 				ctx.strokeStyle = "#00ff7f";
@@ -187,24 +170,41 @@
 				ctx.lineJoin = "round";
 
 				const bones = [
-					[11, 13], [13, 15], [12, 14], [14, 16],
-					[23, 25], [25, 27], [24, 26], [26, 28],
-					[11, 12], [23, 24], [11, 23], [12, 24]
+					[11, 13],
+					[13, 15],
+					[12, 14],
+					[14, 16],
+					[23, 25],
+					[25, 27],
+					[24, 26],
+					[26, 28],
+					[11, 12],
+					[23, 24],
+					[11, 23],
+					[12, 24]
 				];
 
-				bones.forEach(([a, b]) => drawLine(toCanvas(lm[a]), toCanvas(lm[b])));
+				bones.forEach(([a, b]) =>
+					drawLine(toCanvas(lm[a]), toCanvas(lm[b]))
+				);
+
 				lm.forEach(p => drawPoint(toCanvas(p)));
 
-				drawAngle(lm[11], lm[13], lm[15]); 
-				drawAngle(lm[12], lm[14], lm[16]); 
-				drawAngle(lm[23], lm[25], lm[27]); 
-				drawAngle(lm[24], lm[26], lm[28]); 
+				// 角度
+				drawAngle(lm[11], lm[13], lm[15]); // 左肘
+				drawAngle(lm[12], lm[14], lm[16]); // 右肘
+				drawAngle(lm[23], lm[25], lm[27]); // 左膝
+				drawAngle(lm[24], lm[26], lm[28]); // 右膝
 
 				ctx.restore();
 			}
 
+			/* ---------- 工具函数 ---------- */
 			function toCanvas(p) {
-				return { x: p.x * canvas.width, y: p.y * canvas.height };
+				return {
+					x: p.x * canvas.width,
+					y: p.y * canvas.height
+				};
 			}
 
 			function drawLine(a, b) {
@@ -222,80 +222,123 @@
 			}
 
 			function calcAngle(a, b, c) {
-				const ab = { x: a.x - b.x, y: a.y - b.y };
-				const cb = { x: c.x - b.x, y: c.y - b.y };
+				const ab = {
+					x: a.x - b.x,
+					y: a.y - b.y
+				};
+				const cb = {
+					x: c.x - b.x,
+					y: c.y - b.y
+				};
+
 				const dot = ab.x * cb.x + ab.y * cb.y;
 				const mag1 = Math.hypot(ab.x, ab.y);
 				const mag2 = Math.hypot(cb.x, cb.y);
+
 				return Math.acos(dot / (mag1 * mag2)) * 180 / Math.PI;
 			}
 
 			function drawAngle(a, b, c) {
-				if(!a || !b || !c) return;
 				const angle = Math.round(calcAngle(a, b, c));
 				const p = toCanvas(b);
 				ctx.font = "12px monospace";
 				ctx.fillText(`${angle}°`, p.x + 6, p.y - 6);
 			}
 
-			/* ================= 录制与 Flutter 交互 ================= */
+
+			/* --- 录制接口 --- */
 			let mediaRecorder;
 			let recordedChunks = [];
-			let startTime;
-
 			window.startRecord = function() {
 				recordedChunks = [];
-				startTime = Date.now();
 				mediaRecorder = new MediaRecorder(video.srcObject);
 				mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
 				mediaRecorder.start();
 			};
-
+			// 2. 暂停/恢复录制
 			window.pauseRecord = function() {
 				if (!mediaRecorder) return;
-				mediaRecorder.state === "recording" ? mediaRecorder.pause() : mediaRecorder.resume();
+				if (mediaRecorder.state === "recording") {
+					mediaRecorder.pause();
+					// 暂停时可以累计已录制时间（此处简化处理，假设为连续录制）
+				} else if (mediaRecorder.state === "paused") {
+					mediaRecorder.resume();
+				}
 			};
-
+			// 3. 停止并上传 (由 Flutter 调用并传入 Token 和 URL)
 			window.stopAndUpload = async function(uploadUrl, token) {
 				if (!mediaRecorder) return;
+
 				mediaRecorder.onstop = async () => {
-					const duration = (Date.now() - startTime) / 1000;
-					const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+					duration = (Date.now() - startTime) / 1000;
+					const blob = new Blob(recordedChunks, {
+						type: mediaRecorder.mimeType
+					});
+
+					// 构建表单数据
 					const formData = new FormData();
+					// 生成一个文件名，如果是 WebM 建议后缀写 .webm
 					const ext = mediaRecorder.mimeType.includes("mp4") ? "mp4" : "webm";
 					formData.append("file", blob, `record_${Date.now()}.${ext}`);
 					formData.append("duration", duration);
 
 					try {
-						const response = await fetch(uploadUrl, { method: "POST", body: formData });
+						// tip.textContent = "Uploading...";
+						// const response = await fetch(uploadUrl, {
+						//   method: "POST",
+						//   headers: {
+						//     "Authorization": `Bearer ${token}` // 传入 Flutter 提供的 Token
+						//   },
+						//   body: formData
+						// });
+
+						// const result = await response.json();
+
+						// // 通知 Flutter 上传成功
+						// window.flutter_inappwebview.callHandler("onUploadComplete", {
+						//   success: response.ok,
+						//   data: result,
+						//   duration: duration
+						// });
+						// tip.textContent = response.ok ? "Upload Success" : "Upload Failed";
+						const response = await fetch(uploadUrl, {
+							method: "POST",
+							// headers: { "Authorization": `Bearer ${token}` },
+							body: formData
+						});
+
+						// ⭐ 测试专用：Webhook.site 可能不返回 JSON
+						let resultText = await response.text();
+						console.log("Raw Response:", resultText);
+
 						window.flutter_inappwebview.callHandler("onUploadComplete", {
 							success: response.ok,
 							status: response.status,
 							duration: duration
 						});
 					} catch (err) {
-						window.flutter_inappwebview.callHandler("onUploadComplete", { success: false, error: err.message });
+						console.error("Upload Error:", err);
+						window.flutter_inappwebview.callHandler("onUploadComplete", {
+							success: false,
+							error: err.message
+						});
+						tip.textContent = "Upload Error";
 					}
 				};
+
 				mediaRecorder.stop();
 			};
-
+			/* ================= Flutter / 切摄像头 ================= */
 			window.toggleCamera = async () => {
 				facingMode = facingMode === "user" ? "environment" : "user";
 				await startCamera();
 				return facingMode;
 			};
 
-			/* ================= 启动流程 ================= */
-			async function main() {
-				// 1. 先开摄像头并启动渲染循环
-				await startCamera();
-				requestAnimationFrame(loop);
-				// 2. 后台加载 AI，不阻塞画面
-				initAI();
-			}
-
-			main();
+			//L
+			/* ================= 启动 ================= */
+			startCamera();
+			initAI();
 			
 		</script>
 	</body>
