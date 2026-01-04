@@ -289,7 +289,7 @@
 			/* ================= 启动流程 ================= */
 			async function main() {
 				// 1. 先开摄像头并启动渲染循环
-			await startCamera();
+				await startCamera();
 				requestAnimationFrame(loop);
 				// 2. 后台加载 AI，不阻塞画面
 				initAI();
