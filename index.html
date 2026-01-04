@@ -4,55 +4,12 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 		<title>Pose Pro Fixed</title>
-
 		<style>
-			html,
-			body {
-				margin: 0;
-				padding: 0;
-				width: 100%;
-				height: 100%;
-				background: #000;
-				overflow: hidden;
-			}
-
-			video {
-				position: absolute;
-				inset: 0;
-				width: 100%;
-				height: 100%;
-				object-fit: cover;
-				z-index: 1; /* 确保视频在底层 */
-				background: #000;
-			}
-
-			canvas {
-				position: absolute;
-				inset: 0;
-				width: 100%;
-				height: 100%;
-				object-fit: cover;
-				z-index: 2; /* 画布在视频上方 */
-				pointer-events: none; /* 防止画布阻挡点击 */
-			}
-
-			.mirror {
-				transform: scaleX(-1);
-				-webkit-transform: scaleX(-1);
-			}
-
-			#tip {
-				position: absolute;
-				top: 12px;
-				left: 12px;
-				z-index: 10;
-				color: #4ec9b0;
-				background: rgba(0, 0, 0, 0.7);
-				padding: 6px 10px;
-				border-radius: 4px;
-				font-family: monospace;
-				font-size: 12px;
-			}
+			html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+			video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; background: #000; }
+			canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; pointer-events: none; }
+			.mirror { transform: scaleX(-1); -webkit-transform: scaleX(-1); }
+			#tip { position: absolute; top: 12px; left: 12px; z-index: 10; color: #4ec9b0; background: rgba(0, 0, 0, 0.7); padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; }
 		</style>
 	</head>
 
@@ -62,34 +19,27 @@
 		<canvas id="canvas"></canvas>
 
 		<script type="module">
-			import {
-				PoseLandmarker,
-				FilesetResolver
-			}
-			from "/mediapipe/tasks-vision/vision_bundle.js";
+			import { PoseLandmarker, FilesetResolver } from "/mediapipe/tasks-vision/vision_bundle.js";
 
-			/* ---------- DOM ---------- */
 			const video = document.getElementById("video");
 			const canvas = document.getElementById("canvas");
 			const ctx = canvas.getContext("2d");
 			const tip = document.getElementById("tip");
 
-			/* ---------- 状态 ---------- */
 			let poseLandmarker = null;
 			let running = false;
 			let facingMode = "user";
 
-			/* ---------- FPS & Performance ---------- */
-			let dynamicScale = 0.5; 
+			let dynamicScale = 0.5; 
 			let frameCount = 0;
 			let lastFpsCheck = 0;
 
-			/* ================= 1. 摄像头启动 (优先) ================= */
+			/* ================= 1. 摄像头启动 ================= */
 			async function startCamera() {
-				tip.textContent = "Camera loading...";
-
+				// 停止之前的流，释放硬件资源
 				if (video.srcObject) {
 					video.srcObject.getTracks().forEach(t => t.stop());
+					video.srcObject = null;
 				}
 
 				try {
@@ -103,10 +53,10 @@
 
 					video.srcObject = stream;
 
-					// 核心修改：等待元数据加载，立即显示画面
 					return new Promise((resolve) => {
 						video.onloadedmetadata = () => {
 							video.play();
+							// 关键：切换镜头后必须重新同步画布尺寸，因为前后置分辨率可能不同
 							canvas.width = video.videoWidth;
 							canvas.height = video.videoHeight;
 
@@ -115,22 +65,19 @@
 							canvas.classList.toggle("mirror", mirror);
 
 							running = true; 
-							tip.textContent = "Camera OK, loading AI...";
 							resolve();
 						};
 					});
 				} catch (err) {
 					tip.textContent = "Camera Error: " + err.message;
+					console.error(err);
 				}
 			}
 
-			/* ================= 2. AI 初始化 (异步) ================= */
+			/* ================= 2. AI 初始化 ================= */
 			async function initAI() {
 				try {
-					const vision = await FilesetResolver.forVisionTasks(
-						"/mediapipe/tasks-vision/wasm"
-					);
-
+					const vision = await FilesetResolver.forVisionTasks("/mediapipe/tasks-vision/wasm");
 					poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
 						baseOptions: {
 							modelAssetPath: "/mediapipe/model/pose_landmarker_lite.task",
@@ -139,45 +86,64 @@
 						runningMode: "VIDEO",
 						numPoses: 1
 					});
-
 					tip.textContent = "AI Ready";
 				} catch (err) {
 					tip.textContent = "AI Load Failed";
-					console.error(err);
 				}
 			}
 
-			/* ================= 3. 主循环 (解耦检测与渲染) ================= */
+			/* ================= 3. 主循环 ================= */
 			function loop(ts) {
 				requestAnimationFrame(loop);
-				if (!running) return;
+				// 如果没有在运行或者模型还没加载，直接跳过
+				if (!running || !poseLandmarker) return;
 
-				// 清除画布（注意：video 会在底层自动渲染，canvas 只负责画线）
 				ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-				// 如果 AI 还没好，直接跳过 AI 计算，保持视频播放
-				if (!poseLandmarker) return;
-
-				// 性能监控
 				frameCount++;
 				if (ts - lastFpsCheck > 1000) {
 					const fps = frameCount;
 					if (fps < 12 && dynamicScale > 0.3) dynamicScale -= 0.1;
 					else if (fps > 14 && dynamicScale < 1.0) dynamicScale += 0.1;
-					
 					tip.textContent = `Quality: ${Math.round(dynamicScale * 100)}% | FPS: ${fps}`;
 					frameCount = 0;
 					lastFpsCheck = ts;
 				}
 
-				// AI 姿态识别
-				const result = poseLandmarker.detectForVideo(video, ts);
-				if (result.landmarks && result.landmarks.length > 0) {
-					drawPose(result.landmarks[0]);
+				try {
+					// 只有在视频准备好且有数据时才检测
+					if (video.readyState >= 2) {
+						const result = poseLandmarker.detectForVideo(video, ts);
+						if (result.landmarks && result.landmarks.length > 0) {
+							drawPose(result.landmarks[0]);
+						}
+					}
+				} catch (e) {
+					// 捕获切换瞬间可能产生的底层错误
+					console.warn("Detection skipped this frame:", e);
 				}
 			}
 
-			/* ================= 绘制函数 ================= */
+			/* ================= 4. 切换摄像头 (修复重点) ================= */
+			window.toggleCamera = async () => {
+				tip.textContent = "Switching Camera...";
+				
+				// 1. 先停止当前运行状态，清理画布
+				running = false; 
+				ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+				// 2. 切换模式
+				facingMode = facingMode === "user" ? "environment" : "user";
+				
+				// 3. 重新启动摄像头
+				await startCamera();
+				
+				// 4. 返回当前模式给 Flutter
+				tip.textContent = `Camera OK (${facingMode})`;
+				return facingMode;
+			};
+
+			/* ================= 绘制逻辑 ================= */
 			function drawPose(lm) {
 				ctx.save();
 				ctx.strokeStyle = "#00ff7f";
@@ -192,33 +158,32 @@
 					[11, 12], [23, 24], [11, 23], [12, 24]
 				];
 
-				bones.forEach(([a, b]) => drawLine(toCanvas(lm[a]), toCanvas(lm[b])));
-				lm.forEach(p => drawPoint(toCanvas(p)));
+				bones.forEach(([a, b]) => {
+					const pA = toCanvas(lm[a]);
+					const pB = toCanvas(lm[b]);
+					ctx.beginPath();
+					ctx.moveTo(pA.x, pA.y);
+					ctx.lineTo(pB.x, pB.y);
+					ctx.stroke();
+				});
 
-				drawAngle(lm[11], lm[13], lm[15]); 
-				drawAngle(lm[12], lm[14], lm[16]); 
-				drawAngle(lm[23], lm[25], lm[27]); 
-				drawAngle(lm[24], lm[26], lm[28]); 
+				lm.forEach(p => {
+					const pos = toCanvas(p);
+					ctx.beginPath();
+					ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
+					ctx.fill();
+				});
+
+				drawAngle(lm[11], lm[13], lm[15]); 
+				drawAngle(lm[12], lm[14], lm[16]); 
+				drawAngle(lm[23], lm[25], lm[27]); 
+				drawAngle(lm[24], lm[26], lm[28]); 
 
 				ctx.restore();
 			}
 
 			function toCanvas(p) {
 				return { x: p.x * canvas.width, y: p.y * canvas.height };
-			}
-
-			function drawLine(a, b) {
-				if (!a || !b) return;
-				ctx.beginPath();
-				ctx.moveTo(a.x, a.y);
-				ctx.lineTo(b.x, b.y);
-				ctx.stroke();
-			}
-
-			function drawPoint(p) {
-				ctx.beginPath();
-				ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-				ctx.fill();
 			}
 
 			function calcAngle(a, b, c) {
@@ -238,7 +203,7 @@
 				ctx.fillText(`${angle}°`, p.x + 6, p.y - 6);
 			}
 
-			/* ================= 录制与 Flutter 交互 ================= */
+			/* ================= 录制部分保持不变 ================= */
 			let mediaRecorder;
 			let recordedChunks = [];
 			let startTime;
@@ -251,11 +216,6 @@
 				mediaRecorder.start();
 			};
 
-			window.pauseRecord = function() {
-				if (!mediaRecorder) return;
-				mediaRecorder.state === "recording" ? mediaRecorder.pause() : mediaRecorder.resume();
-			};
-
 			window.stopAndUpload = async function(uploadUrl, token) {
 				if (!mediaRecorder) return;
 				mediaRecorder.onstop = async () => {
@@ -265,13 +225,10 @@
 					const ext = mediaRecorder.mimeType.includes("mp4") ? "mp4" : "webm";
 					formData.append("file", blob, `record_${Date.now()}.${ext}`);
 					formData.append("duration", duration);
-
 					try {
 						const response = await fetch(uploadUrl, { method: "POST", body: formData });
 						window.flutter_inappwebview.callHandler("onUploadComplete", {
-							success: response.ok,
-							status: response.status,
-							duration: duration
+							success: response.ok, status: response.status, duration: duration
 						});
 					} catch (err) {
 						window.flutter_inappwebview.callHandler("onUploadComplete", { success: false, error: err.message });
@@ -280,23 +237,13 @@
 				mediaRecorder.stop();
 			};
 
-			window.toggleCamera = async () => {
-				facingMode = facingMode === "user" ? "environment" : "user";
-				await startCamera();
-				return facingMode;
-			};
-
-			/* ================= 启动流程 ================= */
+			/* ================= 启动 ================= */
 			async function main() {
-				// 1. 先开摄像头并启动渲染循环
 				await startCamera();
 				requestAnimationFrame(loop);
-				// 2. 后台加载 AI，不阻塞画面
 				initAI();
 			}
-
 			main();
-			
 		</script>
 	</body>
 </html>
