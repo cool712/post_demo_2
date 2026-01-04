@@ -39,7 +39,6 @@
 				// 停止之前的流，释放硬件资源
 				if (video.srcObject) {
 					video.srcObject.getTracks().forEach(t => t.stop());
-					video.srcObject = null;
 				}
 
 				try {
