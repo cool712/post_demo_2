@@ -76,6 +76,7 @@
 			/* ================= 2. AI 初始化 ================= */
 			async function initAI() {
 				try {
+					tip.textContent = "AI loading...";
 					const vision = await FilesetResolver.forVisionTasks("/mediapipe/tasks-vision/wasm");
 					poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
 						baseOptions: {
